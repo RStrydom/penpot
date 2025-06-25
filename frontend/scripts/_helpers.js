@@ -44,18 +44,63 @@ async function findFiles(basePath, predicate, options = {}) {
   return files;
 }
 
-function syncDirs(originPath, destPath) {
-  const command = `rsync -ar --delete ${originPath} ${destPath}`;
+async function syncDirs(originPath, destPath) {
+  try {
+    // Ensure destination directory exists
+    await fs.mkdir(destPath, { recursive: true });
 
-  return new Promise((resolve, reject) => {
-    proc.exec(command, (cause, stdout) => {
-      if (cause) {
-        reject(cause);
+    // Get list of files in origin directory
+    const files = await fs.readdir(originPath, { recursive: true });
+
+    // Copy each file
+    for (const file of files) {
+      const srcPath = ph.join(originPath, file);
+      const dstPath = ph.join(destPath, file);
+
+      const stat = await fs.stat(srcPath);
+      if (stat.isDirectory()) {
+        // Create directory if it doesn't exist
+        await fs.mkdir(dstPath, { recursive: true });
       } else {
-        resolve();
+        // Ensure parent directory exists
+        await fs.mkdir(ph.dirname(dstPath), { recursive: true });
+        // Copy file
+        await fs.copyFile(srcPath, dstPath);
       }
-    });
-  });
+    }
+
+    // Clean up files in destination that don't exist in origin (equivalent to rsync --delete)
+    try {
+      const destFiles = await fs.readdir(destPath, { recursive: true });
+      for (const file of destFiles) {
+        const srcPath = ph.join(originPath, file);
+        const dstPath = ph.join(destPath, file);
+
+        try {
+          await fs.access(srcPath);
+          // File exists in source, keep it
+        } catch {
+          // File doesn't exist in source, remove it from destination
+          try {
+            const stat = await fs.stat(dstPath);
+            if (stat.isDirectory()) {
+              await fs.rmdir(dstPath, { recursive: true });
+            } else {
+              await fs.unlink(dstPath);
+            }
+          } catch {
+            // File already deleted or doesn't exist
+          }
+        }
+      }
+    } catch {
+      // Destination directory doesn't exist or is empty, that's ok
+    }
+  } catch (error) {
+    throw new Error(
+      `Failed to sync directories from ${originPath} to ${destPath}: ${error.message}`,
+    );
+  }
 }
 
 export function isSassFile(path) {
@@ -255,9 +300,9 @@ const markedOptions = {
         const text = token.text;
         return `<a href="${href}" target="${target}">${text}</a>`;
       }
-    }
-  }
-}
+    },
+  },
+};
 
 marked.use(markedOptions);
 
